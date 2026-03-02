@@ -9,7 +9,7 @@ from nhl_api_scraper import get_today_schedule, get_team_stats
 from powerplay_model import PowerPlayModel
 from edge_checker import calculate_edge
 
-EDGE_THRESHOLD = 0.02
+EDGE_THRESHOLD = 0.049
 DEFAULT_LINE = 0.5
 KELLY_FRACTION = 0.25  # quarter-Kelly for conservative sizing
 
@@ -165,7 +165,7 @@ def _print_session_report(results: list[dict]) -> None:
     neutral = [r for r in rated if 0 < r["edge"] <= EDGE_THRESHOLD]
 
     over_key  = f"o{DEFAULT_LINE}"
-    under_key = f"U{DEFAULT_LINE}"
+    under_key = f"u{DEFAULT_LINE}"
     w   = 88
     div = "=" * w
 
@@ -175,7 +175,7 @@ def _print_session_report(results: list[dict]) -> None:
 
     # ── Section 1: Game-by-game projections ─────────────────────────────────
     print(f"\n  GAME PROJECTIONS\n")
-    col = f"  {'TEAM':<6}  {'PP OPPS':>7}  {'EXP G':>5}  {'o0.5':>5}  {'U0.5':>5}"
+    col = f"  {'TEAM':<6}  {'PP OPPS':>7}  {'EXP G':>5}  {'o0.5':>5}  {'u0.5':>5}"
     col_line = f"  {'─'*6}  {'─'*7}  {'─'*5}  {'─'*5}  {'─'*5}"
     edge_hdr  = f"  {'SIDE':<6}  {'BOOK':>6}  {'MODEL':>6}  {'FAIR':>6}  {'EDGE':>7}  {'KELLY':>6}  FLAG"
     edge_line = f"  {'─'*6}  {'─'*6}  {'─'*6}  {'─'*6}  {'─'*7}  {'─'*6}  {'─'*4}"
@@ -316,6 +316,7 @@ def enter_lines_for_today() -> None:
         print(f"\n{away} @ {home}")
         print("-" * 30)
 
+        # ── Individual team props ────────────────────────────────────────────
         for team, model in ((home, home_model), (away, away_model)):
             over_raw  = input(f"  {team} Over  {DEFAULT_LINE} PP Goals line (press Enter to skip): ")
             under_raw = input(f"  {team} Under {DEFAULT_LINE} PP Goals line (press Enter to skip): ")
@@ -328,7 +329,7 @@ def enter_lines_for_today() -> None:
 
             for side, prob, raw in (
                 (f"o{DEFAULT_LINE}", over_prob,  over_raw),
-                (f"U{DEFAULT_LINE}", under_prob, under_raw),
+                (f"u{DEFAULT_LINE}", under_prob, under_raw),
             ):
                 odds  = _parse_american_odds(raw)
                 fair  = model.fair_odds(prob)
@@ -355,6 +356,49 @@ def enter_lines_for_today() -> None:
                     "edge":      edge,
                     "kelly":     kelly,
                 })
+
+        # ── Combined both-teams prop ─────────────────────────────────────────
+        COMBINED_LINE = 1.5
+        comb_exp   = PowerPlayModel.combined_expected_goals(home_model, away_model)
+        comb_label = f"{away}+{home}"
+
+        comb_over_raw  = input(f"  {comb_label} Combined Over  {COMBINED_LINE} PP Goals line (press Enter to skip): ")
+        comb_under_raw = input(f"  {comb_label} Combined Under {COMBINED_LINE} PP Goals line (press Enter to skip): ")
+
+        comb_over_prob  = PowerPlayModel.combined_probability_over(home_model, away_model, COMBINED_LINE)
+        comb_under_prob = 1 - comb_over_prob
+
+        print(f"  {comb_label}  Combined exp goals: {comb_exp:.2f}")
+
+        for side, prob, raw in (
+            (f"o{COMBINED_LINE}", comb_over_prob,  comb_over_raw),
+            (f"u{COMBINED_LINE}", comb_under_prob, comb_under_raw),
+        ):
+            odds  = _parse_american_odds(raw)
+            fair  = home_model.fair_odds(prob)
+            edge  = calculate_edge(prob, odds) if odds is not None else None
+            kelly = _kelly_pct(prob, odds) * 100 if odds is not None else 0.0
+
+            marker = "  *** +EV ***" if (edge is not None and edge > EDGE_THRESHOLD) else ""
+            print(
+                f"    {side:<6}  Model: {prob:.3f}  Fair: {fair:+d}"
+                + (f"  Book: {odds:+d}  Edge: {edge:+.3f}  Kelly: {kelly:.1f}%{marker}"
+                   if odds is not None else "")
+            )
+
+            results.append({
+                "game":       f"{away}@{home}",
+                "team":       comb_label,
+                "side":       side,
+                "prop":       f"{comb_label} {side}",
+                "pp_opps":    comb_exp,
+                "exp_goals":  comb_exp,
+                "model_prob": prob,
+                "fair":       fair,
+                "odds":       odds,
+                "edge":       edge,
+                "kelly":      kelly,
+            })
 
         print("-" * 40)
 
@@ -393,6 +437,10 @@ def full_projection_scan() -> None:
             league_avg_pk_fail=league_avg_pk_fail_road,
         )
 
+        comb_exp        = PowerPlayModel.combined_expected_goals(home_model, away_model)
+        comb_over_1_5   = PowerPlayModel.combined_probability_over(home_model, away_model, 1.5)
+        comb_under_1_5  = 1 - comb_over_1_5
+
         print(f"{away} @ {home}")
         for label, model in (("Home", home_model), ("Away", away_model)):
             over_prob  = model.probability_over(DEFAULT_LINE)
@@ -400,27 +448,32 @@ def full_projection_scan() -> None:
             print(f"  {label}  PP opps: {model.project_opportunities():.2f}  "
                   f"Exp goals: {model.expected_goals():.2f}  "
                   f"o{DEFAULT_LINE}: {over_prob:.3f}  "
-                  f"U{DEFAULT_LINE}: {under_prob:.3f}")
+                  f"u{DEFAULT_LINE}: {under_prob:.3f}")
+        print(f"  Comb  Exp goals: {comb_exp:.2f}  "
+              f"o1.5: {comb_over_1_5:.3f}  u1.5: {comb_under_1_5:.3f}")
         print("-" * 40)
+
+
+COMBINED_LINE = 1.5
 
 
 def _parse_lines_file(path: str) -> dict[tuple[str, str, str], int | None]:
     """Parse a betting-lines .txt file and return a mapping of
-    (game_key, team_abbrev, side) -> American odds (or None if blank).
+    (game_key, team_or_label, side) -> American odds (or None if blank).
 
-    File format (one team per line, comments with #):
-        AWAY@HOME,TEAM,o0.5_odds,U0.5_odds
+    Individual team rows  (4 columns):
+        AWAY@HOME,TEAM,o0.5_odds,u0.5_odds
+
+    Combined total row  (team field uses AWAY+HOME):
+        AWAY@HOME,AWAY+HOME,o1.5_odds,u1.5_odds
 
     Example:
         TOR@BOS,TOR,-130,+110
         TOR@BOS,BOS,-150,+125
+        TOR@BOS,TOR+BOS,-115,+105
         # leave an odds field blank or use - to skip that side
-        MTL@NYR,MTL,+105,
-        MTL@NYR,NYR,-160,-135
     """
     lines_map: dict[tuple[str, str, str], int | None] = {}
-    over_key  = f"o{DEFAULT_LINE}"
-    under_key = f"U{DEFAULT_LINE}"
 
     with open(path, "r") as f:
         for lineno, raw in enumerate(f, 1):
@@ -434,6 +487,9 @@ def _parse_lines_file(path: str) -> dict[tuple[str, str, str], int | None]:
             game, team, over_raw, under_raw = parts
             game = game.upper()
             team = team.upper()
+            is_combined = "+" in team
+            over_key  = f"o{COMBINED_LINE}" if is_combined else f"o{DEFAULT_LINE}"
+            under_key = f"u{COMBINED_LINE}" if is_combined else f"u{DEFAULT_LINE}"
             for side, raw_odds in ((over_key, over_raw), (under_key, under_raw)):
                 if raw_odds in ("", "-"):
                     odds = None
@@ -457,7 +513,8 @@ def generate_lines_template() -> None:
 
     with open(filepath, "w") as f:
         f.write(f"# NHL Power Play Lines — {date_str}\n")
-        f.write(f"# Format: AWAY@HOME,TEAM,o{DEFAULT_LINE}_odds,U{DEFAULT_LINE}_odds\n")
+        f.write(f"# Individual: AWAY@HOME,TEAM,o{DEFAULT_LINE}_odds,u{DEFAULT_LINE}_odds\n")
+        f.write(f"# Combined:   AWAY@HOME,AWAY+HOME,o{COMBINED_LINE}_odds,u{COMBINED_LINE}_odds\n")
         f.write("# Leave an odds field blank or use - to skip that side\n")
         f.write("#\n")
         for _, game in schedule.iterrows():
@@ -467,6 +524,7 @@ def generate_lines_template() -> None:
             f.write(f"\n# {away} @ {home}\n")
             f.write(f"{game_key},{away},,\n")
             f.write(f"{game_key},{home},,\n")
+            f.write(f"{game_key},{away}+{home},,\n")
 
     print(f"\n  Template written to: {filepath}")
     print("  Fill in the odds columns and use 'Load Lines From File' to run the model.")
@@ -501,11 +559,14 @@ def load_lines_from_file() -> None:
         return
 
     stats = get_team_stats()
-    league_avg_pk_fail = (1 - stats["penaltyKillPct"]).mean()
+    league_avg_pk_fail_home = (1 - stats["penaltyKillPct_home"]).mean()
+    league_avg_pk_fail_road = (1 - stats["penaltyKillPct_road"]).mean()
     results: list[dict] = []
 
     over_key  = f"o{DEFAULT_LINE}"
-    under_key = f"U{DEFAULT_LINE}"
+    under_key = f"u{DEFAULT_LINE}"
+    comb_over_key  = f"o{COMBINED_LINE}"
+    comb_under_key = f"u{COMBINED_LINE}"
 
     print("\n=== LINES LOADED FROM FILE ===\n")
 
@@ -525,12 +586,19 @@ def load_lines_from_file() -> None:
             print(f"  Skipping {game_key}: {exc}")
             continue
 
-        home_model = PowerPlayModel(home_row, away_row, league_avg_pk_fail=league_avg_pk_fail)
-        away_model = PowerPlayModel(away_row, home_row, league_avg_pk_fail=league_avg_pk_fail)
+        home_model = PowerPlayModel(
+            _split_row(home_row, "home"), _split_row(away_row, "road"),
+            league_avg_pk_fail=league_avg_pk_fail_home,
+        )
+        away_model = PowerPlayModel(
+            _split_row(away_row, "road"), _split_row(home_row, "home"),
+            league_avg_pk_fail=league_avg_pk_fail_road,
+        )
 
         print(f"{away} @ {home}")
         print("-" * 30)
 
+        # ── Individual team props ────────────────────────────────────────────
         for team, model in ((home, home_model), (away, away_model)):
             over_prob  = model.probability_over(DEFAULT_LINE)
             under_prob = 1 - over_prob
@@ -545,7 +613,7 @@ def load_lines_from_file() -> None:
                 else:
                     odds = lines_map[odds_key]
 
-                fair  = model.fair_odds(prob)
+                fair  = home_model.fair_odds(prob)
                 edge  = calculate_edge(prob, odds) if odds is not None else None
                 kelly = _kelly_pct(prob, odds) * 100 if odds is not None else 0.0
 
@@ -569,6 +637,46 @@ def load_lines_from_file() -> None:
                     "edge":       edge,
                     "kelly":      kelly,
                 })
+
+        # ── Combined both-teams prop ─────────────────────────────────────────
+        comb_label     = f"{away}+{home}"
+        comb_exp       = PowerPlayModel.combined_expected_goals(home_model, away_model)
+        comb_over_prob  = PowerPlayModel.combined_probability_over(home_model, away_model, COMBINED_LINE)
+        comb_under_prob = 1 - comb_over_prob
+
+        print(f"  {comb_label}  Combined exp goals: {comb_exp:.2f}")
+
+        for side, prob in ((comb_over_key, comb_over_prob), (comb_under_key, comb_under_prob)):
+            odds_key = (game_key, comb_label, side)
+            if odds_key not in lines_map:
+                odds = None
+            else:
+                odds = lines_map[odds_key]
+
+            fair  = home_model.fair_odds(prob)
+            edge  = calculate_edge(prob, odds) if odds is not None else None
+            kelly = _kelly_pct(prob, odds) * 100 if odds is not None else 0.0
+
+            marker = "  *** +EV ***" if (edge is not None and edge > EDGE_THRESHOLD) else ""
+            print(
+                f"    {side:<6}  Model: {prob:.3f}  Fair: {fair:+d}"
+                + (f"  Book: {odds:+d}  Edge: {edge:+.3f}  Kelly: {kelly:.1f}%{marker}"
+                   if odds is not None else "")
+            )
+
+            results.append({
+                "game":       game_key,
+                "team":       comb_label,
+                "side":       side,
+                "prop":       f"{comb_label} {side}",
+                "pp_opps":    comb_exp,
+                "exp_goals":  comb_exp,
+                "model_prob": prob,
+                "fair":       fair,
+                "odds":       odds,
+                "edge":       edge,
+                "kelly":      kelly,
+            })
 
         print("-" * 40)
 

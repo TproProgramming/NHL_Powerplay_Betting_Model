@@ -45,6 +45,24 @@ class PowerPlayModel:
     def probability_over(self, line: float) -> float:
         return 1 - poisson.cdf(line, self.expected_goals())
 
+    @staticmethod
+    def combined_expected_goals(model_a: "PowerPlayModel", model_b: "PowerPlayModel") -> float:
+        """Total expected PP goals for both teams in the game.
+
+        The sum of two independent Poisson variables is Poisson with
+        lambda equal to the sum of their individual lambdas.
+        """
+        return model_a.expected_goals() + model_b.expected_goals()
+
+    @staticmethod
+    def combined_probability_over(
+        model_a: "PowerPlayModel",
+        model_b: "PowerPlayModel",
+        line: float,
+    ) -> float:
+        lam = PowerPlayModel.combined_expected_goals(model_a, model_b)
+        return 1 - poisson.cdf(line, lam)
+
     def fair_odds(self, probability: float) -> int:
         if probability > 0.5:
             return -round((probability / (1 - probability)) * 100)
