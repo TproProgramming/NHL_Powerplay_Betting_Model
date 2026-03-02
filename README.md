@@ -132,7 +132,7 @@ When prompted after the session report, typing `y` saves a file named `pp_report
 |---|---|
 | `date` | Report date |
 | `game` | Matchup (e.g. `VAN@DAL`) |
-| `prop` | Team and side (e.g. `DAL O0.5`) |
+| `prop` | Team and side (e.g. `DAL o0.5`) |
 | `model_prob` | Model's probability for this outcome |
 | `fair_odds` | Fair American odds derived from model |
 | `book_odds` | Sportsbook line entered |

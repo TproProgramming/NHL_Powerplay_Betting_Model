@@ -107,7 +107,7 @@ def get_team_stats(season: str | None = None) -> pd.DataFrame:
     -------
     pd.DataFrame
         Columns: teamId, teamAbbrev, teamFullName,
-                 powerPlayPct, penaltyKillPct, penaltiesPerGame
+                 powerPlayPct, penaltyKillPct, ppOpportunitiesPerGame
     """
     if season is None:
         season = _current_season()
@@ -119,21 +119,19 @@ def get_team_stats(season: str | None = None) -> pd.DataFrame:
     ].copy()
     summary["teamId"] = summary["teamId"].astype(int)
 
-    # penaltiesTakenPer60 == penaltiesPerGame because games are 60 minutes.
-    penalties_raw = _fetch_team_endpoint("penalties", season)
-    if {"teamId", "penaltiesTakenPer60"}.issubset(penalties_raw.columns):
-        penalties_raw = penalties_raw[["teamId", "penaltiesTakenPer60"]].copy()
-        penalties_raw["teamId"] = penalties_raw["teamId"].astype(int)
-        penalties_raw = penalties_raw.rename(
-            columns={"penaltiesTakenPer60": "penaltiesPerGame"}
-        )
-        df = summary.merge(penalties_raw, on="teamId", how="left")
+    # Actual PP opportunities received per game — already excludes offsetting minors
+    # because the scorekeeper only logs a ppOpportunity when a power play actually starts.
+    pp_raw = _fetch_team_endpoint("powerplay", season)
+    if "ppOpportunitiesPerGame" in pp_raw.columns:
+        pp_raw = pp_raw[["teamId", "ppOpportunitiesPerGame"]].copy()
+        pp_raw["teamId"] = pp_raw["teamId"].astype(int)
+        df = summary.merge(pp_raw, on="teamId", how="left")
     else:
         df = summary.copy()
-        df["penaltiesPerGame"] = float("nan")
+        df["ppOpportunitiesPerGame"] = float("nan")
 
     # Fill any gaps with league average
-    df["penaltiesPerGame"] = df["penaltiesPerGame"].fillna(3.2)
+    df["ppOpportunitiesPerGame"] = df["ppOpportunitiesPerGame"].fillna(3.1)
 
     # Map teamFullName → teamAbbrev via standings
     abbrev_map = _build_abbrev_map()
@@ -146,6 +144,6 @@ def get_team_stats(season: str | None = None) -> pd.DataFrame:
             "teamFullName",
             "powerPlayPct",
             "penaltyKillPct",
-            "penaltiesPerGame",
+            "ppOpportunitiesPerGame",
         ]
     ]

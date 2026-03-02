@@ -49,38 +49,47 @@ def view_today_games() -> None:
 
 
 def _export_to_csv(results: list[dict], date_str: str) -> None:
-    """Write all priced props plus a summary row to a timestamped CSV file."""
+    """Write full projection data for all props, edge analysis for priced props,
+    and a summary row to a timestamped CSV file."""
     filename = f"pp_report_{date_str}.csv"
     path = os.path.join(os.path.dirname(__file__), filename)
 
     fieldnames = [
-        "date", "game", "prop", "model_prob", "fair_odds",
-        "book_odds", "implied_prob", "edge", "kelly_pct", "ev_flag",
+        "date", "game", "team", "side", "pp_opps", "exp_goals",
+        "model_prob", "fair_odds", "book_odds", "implied_prob",
+        "edge", "kelly_pct", "ev_flag",
     ]
 
     rated = [r for r in results if r["odds"] is not None]
+
+    def _implied(odds: int) -> float:
+        return abs(odds) / (abs(odds) + 100) if odds < 0 else 100 / (odds + 100)
 
     with open(path, "w", newline="") as f:
         writer = csv.DictWriter(f, fieldnames=fieldnames)
         writer.writeheader()
 
-        for r in sorted(rated, key=lambda x: x["edge"], reverse=True):
-            implied = abs(r["odds"]) / (abs(r["odds"]) + 100) if r["odds"] < 0 else 100 / (r["odds"] + 100)
-            ev_flag = "+EV" if r["edge"] > EDGE_THRESHOLD else ("MARGINAL" if r["edge"] > 0 else "AVOID")
+        for r in sorted(results, key=lambda x: (x["game"], x["team"], x["side"])):
+            has_odds = r["odds"] is not None
+            ev_flag = ""
+            if has_odds:
+                ev_flag = "+EV" if r["edge"] > EDGE_THRESHOLD else ("MARGINAL" if r["edge"] > 0 else "AVOID")
             writer.writerow({
                 "date":        date_str,
                 "game":        r["game"],
-                "prop":        r["prop"],
+                "team":        r["team"],
+                "side":        r["side"],
+                "pp_opps":     round(r["pp_opps"], 3),
+                "exp_goals":   round(r["exp_goals"], 3),
                 "model_prob":  round(r["model_prob"], 4),
                 "fair_odds":   r["fair"],
-                "book_odds":   r["odds"],
-                "implied_prob": round(implied, 4),
-                "edge":        round(r["edge"], 4),
-                "kelly_pct":   round(r["kelly"], 2),
+                "book_odds":   r["odds"] if has_odds else "",
+                "implied_prob": round(_implied(r["odds"]), 4) if has_odds else "",
+                "edge":        round(r["edge"], 4) if has_odds else "",
+                "kelly_pct":   round(r["kelly"], 2) if has_odds else "",
                 "ev_flag":     ev_flag,
             })
 
-        # Summary row
         if rated:
             best  = max(rated, key=lambda x: x["edge"])
             worst = min(rated, key=lambda x: x["edge"])
@@ -89,7 +98,10 @@ def _export_to_csv(results: list[dict], date_str: str) -> None:
             writer.writerow({
                 "date":        date_str,
                 "game":        "SUMMARY",
-                "prop":        f"{len(rated)} props / {len(pos)} +EV",
+                "team":        f"{len(results)} projections / {len(rated)} priced / {len(pos)} +EV",
+                "side":        "",
+                "pp_opps":     "",
+                "exp_goals":   "",
                 "model_prob":  "",
                 "fair_odds":   "",
                 "book_odds":   "",
@@ -109,9 +121,24 @@ def _kelly_pct(prob: float, odds: int) -> float:
     return max(kelly * KELLY_FRACTION, 0.0)
 
 
+def _group_by_game(results: list[dict]) -> dict[str, dict]:
+    """Return results grouped as {game_key: {away, home, teams: {abbrev: {side: result}}}}."""
+    games: dict[str, dict] = {}
+    for r in results:
+        gk = r["game"]
+        if gk not in games:
+            away, home = gk.split("@")
+            games[gk] = {"away": away, "home": home, "teams": {}}
+        td = games[gk]["teams"]
+        if r["team"] not in td:
+            td[r["team"]] = {}
+        td[r["team"]][r["side"]] = r
+    return games
+
+
 def _print_session_report(results: list[dict]) -> None:
     if not results:
-        print("\n  No lines were entered.")
+        print("\n  No data to report.")
         return
 
     rated   = [r for r in results if r["odds"] is not None]
@@ -121,68 +148,111 @@ def _print_session_report(results: list[dict]) -> None:
                      key=lambda r: r["edge"])
     neutral = [r for r in rated if 0 < r["edge"] <= EDGE_THRESHOLD]
 
-    w = 74
+    over_key  = f"o{DEFAULT_LINE}"
+    under_key = f"U{DEFAULT_LINE}"
+    w   = 88
     div = "=" * w
 
     print(f"\n\n{div}")
-    print(f"  DAILY BETTING REPORT  —  {datetime.today().strftime('%A %b %d, %Y')}")
+    print(f"  DAILY REPORT  —  {datetime.today().strftime('%A %b %d, %Y')}")
     print(div)
 
-    # ── Full ranked table ───────────────────────────────────────────────────
-    print(f"\n{'PROP':<22} {'GAME':<12} {'MODEL':>6} {'FAIR':>6} {'BOOK':>6} {'EDGE':>7} {'KELLY':>7}")
-    print("-" * w)
-    for r in sorted(rated, key=lambda r: r["edge"], reverse=True):
-        ev_tag = " +" if r["edge"] > EDGE_THRESHOLD else ("  " if r["edge"] > 0 else " -")
-        print(
-            f"{r['prop']:<22} {r['game']:<12} "
-            f"{r['model_prob']:>6.3f} {r['fair']:>+6d} {r['odds']:>+6d} "
-            f"{r['edge']:>+7.3f}{ev_tag}  "
-            f"{r['kelly']:>5.1f}%"
-        )
+    # ── Section 1: Game-by-game projections ─────────────────────────────────
+    print(f"\n  GAME PROJECTIONS\n")
+    col = f"  {'TEAM':<6}  {'PP OPPS':>7}  {'EXP G':>5}  {'o0.5':>5}  {'U0.5':>5}"
+    col_line = f"  {'─'*6}  {'─'*7}  {'─'*5}  {'─'*5}  {'─'*5}"
+    edge_hdr  = f"  {'SIDE':<6}  {'BOOK':>6}  {'MODEL':>6}  {'FAIR':>6}  {'EDGE':>7}  {'KELLY':>6}  FLAG"
+    edge_line = f"  {'─'*6}  {'─'*6}  {'─'*6}  {'─'*6}  {'─'*7}  {'─'*6}  {'─'*4}"
 
-    # ── +EV bets ────────────────────────────────────────────────────────────
+    games = _group_by_game(results)
+    for gk, gdata in games.items():
+        away, home = gdata["away"], gdata["home"]
+        print(f"  {away} @ {home}")
+        print(col)
+        print(col_line)
+
+        for team in (home, away):
+            sides = gdata["teams"].get(team, {})
+            ov = sides.get(over_key)
+            un = sides.get(under_key)
+            if ov is None:
+                continue
+            print(
+                f"  {team:<6}  {ov['pp_opps']:>7.2f}  {ov['exp_goals']:>5.2f}"
+                f"  {ov['model_prob']:>5.3f}  {un['model_prob']:>5.3f}"
+                if un else
+                f"  {team:<6}  {ov['pp_opps']:>7.2f}  {ov['exp_goals']:>5.2f}"
+                f"  {ov['model_prob']:>5.3f}  {'—':>5}"
+            )
+
+        # Show entered lines for this game, if any
+        game_rated = [r for r in rated if r["game"] == gk]
+        if game_rated:
+            print()
+            print(edge_hdr)
+            print(edge_line)
+            for r in sorted(game_rated, key=lambda x: x["edge"], reverse=True):
+                flag = "+EV" if r["edge"] > EDGE_THRESHOLD else ("MRGN" if r["edge"] > 0 else "AVOID")
+                print(
+                    f"  {r['prop']:<6}  {r['odds']:>+6d}  {r['model_prob']:>6.3f}"
+                    f"  {r['fair']:>+6d}  {r['edge']:>+7.3f}  {r['kelly']:>5.1f}%  {flag}"
+                )
+        print()
+
+    # ── Section 2: Full edge rankings ───────────────────────────────────────
+    if rated:
+        print(f"{'─' * w}")
+        print(f"  EDGE RANKINGS  ({len(rated)} props priced)\n")
+        print(f"  {'PROP':<22} {'GAME':<12} {'MODEL':>6} {'FAIR':>6} {'BOOK':>6} {'EDGE':>7} {'KELLY':>7}  FLAG")
+        print(f"  {'─'*22} {'─'*12} {'─'*6} {'─'*6} {'─'*6} {'─'*7} {'─'*7}  {'─'*5}")
+        for r in sorted(rated, key=lambda r: r["edge"], reverse=True):
+            flag = "+EV " if r["edge"] > EDGE_THRESHOLD else ("MRGN" if r["edge"] > 0 else "AVOD")
+            print(
+                f"  {r['prop']:<22} {r['game']:<12} "
+                f"{r['model_prob']:>6.3f} {r['fair']:>+6d} {r['odds']:>+6d} "
+                f"{r['edge']:>+7.3f} {r['kelly']:>6.1f}%  {flag}"
+            )
+
+    # ── Section 3: +EV callouts ─────────────────────────────────────────────
     print(f"\n{'─' * w}")
-    print(f"  +EV BETS  ({len(pos_ev)} found, threshold >{EDGE_THRESHOLD:.0%})")
+    print(f"  +EV BETS  ({len(pos_ev)} found, threshold > {EDGE_THRESHOLD:.0%})")
     print(f"{'─' * w}")
     if pos_ev:
         for r in pos_ev:
             print(
-                f"  *** {r['prop']:<20} {r['game']:<12} "
-                f"Edge: {r['edge']:+.3f}   "
-                f"Model: {r['model_prob']:.3f}   "
-                f"Book: {r['odds']:+d}   "
-                f"Kelly: {r['kelly']:.1f}%"
+                f"  *** {r['prop']:<20} {r['game']:<12}"
+                f"  Edge: {r['edge']:+.3f}   Model: {r['model_prob']:.3f}"
+                f"   Book: {r['odds']:+d}   Kelly: {r['kelly']:.1f}%"
             )
     else:
         print("  None.")
 
-    # ── Neutral (small edge) ─────────────────────────────────────────────────
     if neutral:
         print(f"\n{'─' * w}")
         print(f"  MARGINAL  (0 < edge <= {EDGE_THRESHOLD:.0%})")
         print(f"{'─' * w}")
         for r in neutral:
-            print(f"  {r['prop']:<20} {r['game']:<12} Edge: {r['edge']:+.3f}   Book: {r['odds']:+d}")
+            print(f"  {r['prop']:<20} {r['game']:<12}  Edge: {r['edge']:+.3f}   Book: {r['odds']:+d}")
 
-    # ── Worst edges ─────────────────────────────────────────────────────────
     if neg_ev:
         print(f"\n{'─' * w}")
         print("  AVOID  (negative edge)")
         print(f"{'─' * w}")
         for r in neg_ev[:5]:
-            print(f"  {r['prop']:<20} {r['game']:<12} Edge: {r['edge']:+.3f}   Book: {r['odds']:+d}")
+            print(f"  {r['prop']:<20} {r['game']:<12}  Edge: {r['edge']:+.3f}   Book: {r['odds']:+d}")
 
-    # ── Summary ─────────────────────────────────────────────────────────────
+    # ── Section 4: Summary ───────────────────────────────────────────────────
     print(f"\n{'─' * w}")
     print("  SUMMARY")
     print(f"{'─' * w}")
-    print(f"  Props entered    : {len(rated)}")
+    print(f"  Games today      : {len(games)}")
+    print(f"  Props priced     : {len(rated)}")
     print(f"  +EV bets         : {len(pos_ev)}")
     print(f"  Marginal         : {len(neutral)}")
     print(f"  Negative edge    : {len(neg_ev)}")
     if rated:
-        best  = max(rated, key=lambda r: r["edge"])
-        worst = min(rated, key=lambda r: r["edge"])
+        best     = max(rated, key=lambda r: r["edge"])
+        worst    = min(rated, key=lambda r: r["edge"])
         avg_edge = sum(r["edge"] for r in rated) / len(rated)
         print(f"  Best edge        : {best['edge']:+.3f}  ({best['prop']} — {best['game']})")
         print(f"  Worst edge       : {worst['edge']:+.3f}  ({worst['prop']} — {worst['game']})")
@@ -201,6 +271,7 @@ def enter_lines_for_today() -> None:
         return
 
     stats = get_team_stats()
+    league_avg_pk_fail = (1 - stats["penaltyKillPct"]).mean()
     results: list[dict] = []
 
     print("\n=== ENTER LINES FOR TODAY'S GAMES ===\n")
@@ -216,8 +287,8 @@ def enter_lines_for_today() -> None:
             print(f"  Skipping {away} @ {home}: {exc}")
             continue
 
-        home_model = PowerPlayModel(home_row, away_row)
-        away_model = PowerPlayModel(away_row, home_row)
+        home_model = PowerPlayModel(home_row, away_row, league_avg_pk_fail=league_avg_pk_fail)
+        away_model = PowerPlayModel(away_row, home_row, league_avg_pk_fail=league_avg_pk_fail)
 
         print(f"\n{away} @ {home}")
         print("-" * 30)
@@ -229,40 +300,42 @@ def enter_lines_for_today() -> None:
             over_prob  = model.probability_over(DEFAULT_LINE)
             under_prob = 1 - over_prob
 
-            print(f"  {team}  Exp goals: {model.expected_goals():.2f}")
+            print(f"  {team}  Exp goals: {model.expected_goals():.2f}  "
+                  f"PP opps: {model.project_opportunities():.2f}")
 
             for side, prob, raw in (
-                (f"O{DEFAULT_LINE}", over_prob,  over_raw),
+                (f"o{DEFAULT_LINE}", over_prob,  over_raw),
                 (f"U{DEFAULT_LINE}", under_prob, under_raw),
             ):
-                odds = _parse_american_odds(raw)
-                fair = model.fair_odds(prob)
-                edge = calculate_edge(prob, odds) if odds is not None else None
+                odds  = _parse_american_odds(raw)
+                fair  = model.fair_odds(prob)
+                edge  = calculate_edge(prob, odds) if odds is not None else None
                 kelly = _kelly_pct(prob, odds) * 100 if odds is not None else 0.0
 
-                marker = ""
-                if edge is not None:
-                    marker = "  *** +EV ***" if edge > EDGE_THRESHOLD else ""
-
+                marker = "  *** +EV ***" if (edge is not None and edge > EDGE_THRESHOLD) else ""
                 print(
                     f"    {side:<6}  Model: {prob:.3f}  Fair: {fair:+d}"
-                    + (f"  Book: {odds:+d}  Edge: {edge:+.3f}  Kelly: {kelly:.1f}%{marker}" if odds is not None else "")
+                    + (f"  Book: {odds:+d}  Edge: {edge:+.3f}  Kelly: {kelly:.1f}%{marker}"
+                       if odds is not None else "")
                 )
 
                 results.append({
-                    "game":       f"{away}@{home}",
-                    "prop":       f"{team} {side}",
+                    "game":      f"{away}@{home}",
+                    "team":      team,
+                    "side":      side,
+                    "prop":      f"{team} {side}",
+                    "pp_opps":   model.project_opportunities(),
+                    "exp_goals": model.expected_goals(),
                     "model_prob": prob,
-                    "fair":       fair,
-                    "odds":       odds,
-                    "edge":       edge if edge is not None else 0.0,
-                    "kelly":      kelly,
-                    "_has_odds":  odds is not None,
+                    "fair":      fair,
+                    "odds":      odds,
+                    "edge":      edge,
+                    "kelly":     kelly,
                 })
 
         print("-" * 40)
 
-    _print_session_report([r for r in results if r["_has_odds"]])
+    _print_session_report(results)
 
 
 def full_projection_scan() -> None:
@@ -272,6 +345,7 @@ def full_projection_scan() -> None:
         return
 
     stats = get_team_stats()
+    league_avg_pk_fail = (1 - stats["penaltyKillPct"]).mean()
 
     print("\n=== FULL DAILY PROJECTION SCAN ===\n")
 
@@ -286,8 +360,8 @@ def full_projection_scan() -> None:
             print(f"  Skipping {away} @ {home}: {exc}")
             continue
 
-        home_model = PowerPlayModel(home_row, away_row)
-        away_model = PowerPlayModel(away_row, home_row)
+        home_model = PowerPlayModel(home_row, away_row, league_avg_pk_fail=league_avg_pk_fail)
+        away_model = PowerPlayModel(away_row, home_row, league_avg_pk_fail=league_avg_pk_fail)
 
         print(f"{away} @ {home}")
         for label, model in (("Home", home_model), ("Away", away_model)):
@@ -295,7 +369,7 @@ def full_projection_scan() -> None:
             under_prob = 1 - over_prob
             print(f"  {label}  PP opps: {model.project_opportunities():.2f}  "
                   f"Exp goals: {model.expected_goals():.2f}  "
-                  f"O{DEFAULT_LINE}: {over_prob:.3f}  "
+                  f"o{DEFAULT_LINE}: {over_prob:.3f}  "
                   f"U{DEFAULT_LINE}: {under_prob:.3f}")
         print("-" * 40)
 
