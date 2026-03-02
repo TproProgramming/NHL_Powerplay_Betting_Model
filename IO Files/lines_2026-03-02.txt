@@ -1,0 +1,28 @@
+# NHL Power Play Lines — 2026-03-02
+# Format: AWAY@HOME,TEAM,o0.5_odds,U0.5_odds
+# Leave an odds field blank or use - to skip that side
+#
+
+# DET @ NSH
+DET@NSH,DET,-110,-118
+DET@NSH,NSH,-110,-118
+
+# CBJ @ NYR
+CBJ@NYR,CBJ,125,-165
+CBJ@NYR,NYR,110,-143
+
+# PHI @ TOR
+PHI@TOR,PHI,145,-195
+PHI@TOR,TOR,115,-150
+
+# DAL @ VAN
+DAL@VAN,DAL,-130,100
+DAL@VAN,VAN,125,-165
+
+# CAR @ SEA
+CAR@SEA,CAR,-112,-117
+CAR@SEA,SEA,120,-157
+
+# COL @ LAK
+COL@LAK,COL,-109,-120
+COL@LAK,LAK,140,-186

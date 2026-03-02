@@ -40,6 +40,19 @@ def _lookup_team(stats, abbrev: str):
     return rows.iloc[0]
 
 
+def _split_row(row, split: str) -> dict:
+    """Return a model-ready stat dict using the blended home or road split.
+
+    Keys match what PowerPlayModel.__init__ expects.
+    split must be 'home' or 'road'.
+    """
+    return {
+        "powerPlayPct":           row[f"powerPlayPct_{split}"],
+        "penaltyKillPct":         row[f"penaltyKillPct_{split}"],
+        "ppOpportunitiesPerGame": row[f"ppOpportunitiesPerGame_{split}"],
+    }
+
+
 def view_today_games() -> None:
     schedule = get_today_schedule()
     if schedule.empty:
@@ -274,7 +287,8 @@ def enter_lines_for_today() -> None:
         return
 
     stats = get_team_stats()
-    league_avg_pk_fail = (1 - stats["penaltyKillPct"]).mean()
+    league_avg_pk_fail_home = (1 - stats["penaltyKillPct_home"]).mean()
+    league_avg_pk_fail_road = (1 - stats["penaltyKillPct_road"]).mean()
     results: list[dict] = []
 
     print("\n=== ENTER LINES FOR TODAY'S GAMES ===\n")
@@ -290,8 +304,14 @@ def enter_lines_for_today() -> None:
             print(f"  Skipping {away} @ {home}: {exc}")
             continue
 
-        home_model = PowerPlayModel(home_row, away_row, league_avg_pk_fail=league_avg_pk_fail)
-        away_model = PowerPlayModel(away_row, home_row, league_avg_pk_fail=league_avg_pk_fail)
+        home_model = PowerPlayModel(
+            _split_row(home_row, "home"), _split_row(away_row, "road"),
+            league_avg_pk_fail=league_avg_pk_fail_home,
+        )
+        away_model = PowerPlayModel(
+            _split_row(away_row, "road"), _split_row(home_row, "home"),
+            league_avg_pk_fail=league_avg_pk_fail_road,
+        )
 
         print(f"\n{away} @ {home}")
         print("-" * 30)
@@ -348,7 +368,8 @@ def full_projection_scan() -> None:
         return
 
     stats = get_team_stats()
-    league_avg_pk_fail = (1 - stats["penaltyKillPct"]).mean()
+    league_avg_pk_fail_home = (1 - stats["penaltyKillPct_home"]).mean()
+    league_avg_pk_fail_road = (1 - stats["penaltyKillPct_road"]).mean()
 
     print("\n=== FULL DAILY PROJECTION SCAN ===\n")
 
@@ -363,8 +384,14 @@ def full_projection_scan() -> None:
             print(f"  Skipping {away} @ {home}: {exc}")
             continue
 
-        home_model = PowerPlayModel(home_row, away_row, league_avg_pk_fail=league_avg_pk_fail)
-        away_model = PowerPlayModel(away_row, home_row, league_avg_pk_fail=league_avg_pk_fail)
+        home_model = PowerPlayModel(
+            _split_row(home_row, "home"), _split_row(away_row, "road"),
+            league_avg_pk_fail=league_avg_pk_fail_home,
+        )
+        away_model = PowerPlayModel(
+            _split_row(away_row, "road"), _split_row(home_row, "home"),
+            league_avg_pk_fail=league_avg_pk_fail_road,
+        )
 
         print(f"{away} @ {home}")
         for label, model in (("Home", home_model), ("Away", away_model)):
